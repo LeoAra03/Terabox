@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Renueva y VERIFICA cookie.txt.
+Renueva y VERIFICA la cookie de UNA cuenta.
 
 La verificacion es real: pide un enlace de descarga (/share/download) y baja
 1 KB del CDN. Es la misma cadena que usa el descargador, asi que si esto pasa,
@@ -13,8 +13,10 @@ Codigos que importan:
             generada desde otra red/IP): hay que renovarla igual
 
 Uso:
-  RENOVAR_COOKIE.bat            (menu interactivo)
-  python renovar_cookie.py --check    (silencio, exit 0 = OK / 1 = renovar)
+  RENOVAR_COOKIE.bat                       (menu interactivo, cookie.txt)
+  python renovar_cookie.py --check         (silencio, exit 0 = OK / 1 = renovar)
+  python renovar_cookie.py --cookie-file cookies\\acc2.txt --check
+  python renovar_cookie.py --cookie-file cookies\\acc2.txt --ndus "YQQ-..."
 """
 import os
 import re
@@ -28,7 +30,7 @@ except Exception:
     pass
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
-COOKIE = os.path.join(AQUI, "cookie.txt")
+COOKIE = os.path.join(AQUI, "cookie.txt")   # --cookie-file lo cambia
 
 # (nombre, surl, manifest con fs_id de un archivo chico de ese share)
 SHARES = [
@@ -64,6 +66,7 @@ def extraer_ndus(texto):
 
 
 def guardar(valor):
+    os.makedirs(os.path.dirname(COOKIE) or ".", exist_ok=True)
     with open(COOKIE, "w", encoding="ascii", newline="\n") as fh:
         fh.write("ndus=%s\n" % valor)
 
@@ -153,18 +156,47 @@ def probar(valor, detallado=False):
 
 # --------------------------------------------------------------------------
 def main():
+    global COOKIE
     args = sys.argv[1:]
+
+    # --- NUEVO: apuntar a la cookie de OTRA cuenta ------------------------
+    if "--cookie-file" in args:
+        i = args.index("--cookie-file")
+        if i + 1 >= len(args):
+            print("  [X] --cookie-file necesita una ruta")
+            return 2
+        COOKIE = os.path.abspath(args[i + 1])
+    # --- NUEVO: modo no interactivo ---------------------------------------
+    ndus_arg = None
+    if "--ndus" in args:
+        j = args.index("--ndus")
+        if j + 1 < len(args):
+            ndus_arg = extraer_ndus(args[j + 1])
+        if not ndus_arg:
+            print("  [X] --ndus necesita un valor valido")
+            return 2
+
     if "--check" in args:
         valor = leer_actual()
         if not valor:
-            print("  [!] No hay cookie.txt. Corre RENOVAR_COOKIE.bat")
+            print("  [!] No hay %s. Corre RENOVAR_COOKIE.bat" % os.path.basename(COOKIE))
             return 1
         estado, msg = probar(valor)
         print("  [%s] %s" % ("OK" if estado == "ok" else "X", msg))
         return 0 if estado == "ok" else 1
 
+    # --- NUEVO: guardar sin menu ------------------------------------------
+    if ndus_arg:
+        guardar(ndus_arg)
+        print("  Guardado en %s  (...%s)" % (os.path.basename(COOKIE), ndus_arg[-8:]))
+        print("  Verificando contra TeraBox (pide un enlace y baja 1 KB)...")
+        estado, msg = probar(ndus_arg)
+        print("  [%s] %s" % ("OK" if estado == "ok" else "X", msg))
+        return 0 if estado == "ok" else 1
+
     print("=" * 60)
     print("  COOKIE DE TERABOX  -  renovar y verificar")
+    print("  archivo: %s" % COOKIE)
     print("=" * 60)
     print()
     print("  ANTES DE EMPEZAR: en el navegador, cerra sesion en 1024tera.com")
@@ -173,7 +205,7 @@ def main():
     print()
     print("  1) Usar el ndus del PORTAPAPELES  (copialo antes de venir)")
     print("  2) Pegarlo a mano aca")
-    print("  3) Solo VERIFICAR el cookie.txt que ya tengo")
+    print("  3) Solo VERIFICAR el archivo de cookie que ya tengo")
     print()
     try:
         op = (input("  Elegi [1/2/3]: ").strip() or "1")
@@ -210,7 +242,7 @@ def main():
             print("  Es el mismo que ya tenias. Ojo: puede estar vencido igual.")
         else:
             guardar(valor)
-            print("  Guardado en cookie.txt  (...%s)" % valor[-8:])
+            print("  Guardado en %s  (...%s)" % (os.path.basename(COOKIE), valor[-8:]))
     print()
     print("  Verificando contra TeraBox (pide un enlace y baja 1 KB)...")
     estado, msg = probar(valor)
