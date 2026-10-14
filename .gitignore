@@ -1,0 +1,18 @@
+# ---- credenciales de sesion: NUNCA al repo ----
+cookie.txt
+cookies/
+*.ndus
+cookie*.json
+
+# ---- salidas del descargador ----
+*.part
+*.part.json
+_cuarentena/
+rehacer.txt
+rehacer_fsids.txt
+supervisor.log
+
+# ---- python ----
+__pycache__/
+*.pyc
+*.pyo

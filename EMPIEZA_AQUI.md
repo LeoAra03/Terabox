@@ -55,4 +55,18 @@ los `.bat`, comentadas: sacale el `REM` a la que quieras.
 
 ---
 
+---
+
+## Medir antes, verificar después
+
+Dos herramientas nuevas, de doble clic, que no tocan la descarga:
+
+| | Qué hace |
+|---|---|
+| **`PREFLIGHT.bat`** | Antes de bajar nada: dice si tu disco alcanza (~110 GB libres para inglés) y cuánto da **tu línea** de verdad. Tarda 30 s. |
+| **`VERIFICAR.bat`** | Al terminar: compara cada archivo con el manifiesto (bytes y md5), opcionalmente manda los corruptos a `_cuarentena/`, y deja en `rehacer_fsids.txt` la lista exacta para relanzar. |
+
+El plan completo, con los números medidos, el techo real del plan gratis
+(~3,6 MB/s), los tiempos honestos y el troubleshooting: **`MIGRACION_90GB.md`**.
+
 Detalle completo, problemas y números medidos: **`INSTRUCCIONES.md`**.
