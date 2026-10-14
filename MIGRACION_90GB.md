@@ -480,3 +480,63 @@ Lo que **sí** incluye, y es donde está la ganancia real: medir dónde está tu
 verificar cada byte al final (§4). Si el techo resulta ser de cuenta, el único
 camino corto es premium — y con premium el mismo código ya escrito llega a 400 Mbps
 sin tocar nada del resto.
+
+---
+
+## 8. Auditoría del script de medición pegado
+
+El script que pegaste (`TEST_FILE_URL = "https://app.terabox.com/api/..."`,
+`"URL_DE_PRUEBA_REAL"`, `accounts = [f"acc{i}" for i in range(1, 11)]`) **no puede
+correr**: los tres son placeholders y `./cookies/acc1.json` no existe en tu repo. O
+sea que la medición con ese método todavía no ocurrió. Y cuando corra, va a medir mal
+por estos motivos concretos:
+
+| # | Problema en el código | Por qué invalida la medición |
+|---|---|---|
+| 1 | `for i in range(num_accounts)` es **secuencial** | mide una conexión por vez y después **suma** las muestras. Esa suma no corresponde a ningún instante real: es el tráfico de 7 s repartido en el papel |
+| 2 | Muestra de **1 MB** | mide la **ráfaga** del cubo, no la tasa sostenida. Tu propio log muestra el patrón: arranca en 3,0 MB/s y se asienta en 1,8-2,1 |
+| 3 | `requests.get` **sin `stream=True`** | bufferea el cuerpo entero y mete handshake TLS + DNS dentro de `elapsed`; con 1 MB eso contamina la tasa |
+| 4 | `status_code == 200` cuenta como éxito | si el server ignora el `Range`, devuelve el archivo entero y `len(r.content)/elapsed` igual "da un número" |
+| 5 | `except: return 0` | un 429, un fallo de DNS y una muestra lenta quedan **indistinguibles** |
+| 6 | No detecta **429** ni `Retry-After` | el experimento no puede encontrar el borde, que es la única pregunta que importa |
+| 7 | `sum(speeds)/len(speeds)` | `ZeroDivisionError` si ninguna muestra responde |
+| 8 | `i % len(accounts)` | vuelve a **mezclar dos variables** (nº de cuentas y nº de conexiones) en el mismo test |
+
+### Cuánto infla, medido
+
+Repliqué exactamente esa metodología (secuencial, 1 MB, suma) contra un CDN
+controlado con **cota agregada de 3,0 MB/s** y **1,5 MB/s por conexión**, y después
+medí el mismo CDN con conexiones simultáneas reales:
+
+| Método | Lo que reporta | Throughput real |
+|---|---|---|
+| Metodología del script pegado (10 muestras, secuencial, suma) | **"Velocidad Total: 14,25 MB/s"** | **1,49 MB/s** (10,5 MB en 7,0 s) |
+| `medir_techo.py`, 1x10 conexiones simultáneas | 2,06 MB/s | 2,06 MB/s |
+| `medir_techo.py`, 1x1 | 1,37 MB/s | 1,37 MB/s |
+| Cota real del CDN de prueba | — | 3,00 MB/s |
+
+Infla **~10×**, y hacia arriba. Un número así de inflado es el que hace ver como
+"el techo es por cuenta" algo que puede ser perfectamente por conexión, o el que hace
+creer que sumar cuentas multiplica cuando el agregado está capado por otro lado.
+
+### Lo que sí mide bien
+
+`medir_techo.py` ya está hecho para esto y no tiene ninguno de los 8 problemas:
+mide **en paralelo de verdad**, **streamea**, sostiene la medición **N segundos** en
+vez de 1 MB, cuenta los **429** y **frena** cuando aparecen, y reporta MB/s agregados
+y MB/s por conexión — que es lo que distingue "techo de conexión" de "techo agregado".
+
+```bat
+python medir_techo.py --share "<link>" --configs "1x1,1x8,1x16,2x8,4x8" --segundos 40
+```
+
+### Y una vuelta más sobre el plateau
+
+Aun con un plateau **bien medido**, quedan tres causas posibles y el plateau solo
+**no las distingue**: (a) límite por cuenta, (b) límite por IP, (c) límite de
+ruta/peering ISP<->CDN. Sumar cuentas solo ayuda en (a); sumar cuentas desde la misma
+IP, si la causa es (b), suma cuentas marcadas y cero ancho de banda. La prueba que
+separa (a)/(b) de (c) es la misma de §2: misma cuenta, misma config, **otra red**
+(hotspot del celular). Si desde el hotspot da parecido -> (a) o (b). Si da mucho mas
+-> (c), y ahí el arreglo es con tu ISP, no con TeraBox.
+
