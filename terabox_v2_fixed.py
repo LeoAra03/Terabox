@@ -259,6 +259,17 @@ def main():
     ap.add_argument("--cookie", default=None,
                     help="linea ndus=... (si se omite: variable TERABOX_COOKIE "
                          "o cookie.txt junto al script)")
+    # --- NUEVO: cookie por archivo (para N instancias con N cuentas) ---------
+    ap.add_argument("--cookie-file", default=None,
+                    help="archivo con el ndus de ESTA instancia; tiene prioridad "
+                         "sobre cookie.txt")
+    # --- NUEVO: patrones de inclusion desde archivo (evita lineas de comando
+    #     gigantes cuando se parte un share entre varias instancias) ----------
+    ap.add_argument("--only-file", default=None,
+                    help="archivo con un patron --only por linea; se combinan con OR. "
+                         "Las lineas vacias y las que empiezan con # se ignoran")
+    ap.add_argument("--etiqueta", default=None,
+                    help="prefijo que se agrega a cada linea de log (acc1, acc2, ...)")
     ap.add_argument("--por-carpeta", action="store_true",
                     help="una carpeta completa antes de empezar la siguiente "
                          "(coste: el pool se vacia en cada frontera)")
@@ -266,25 +277,46 @@ def main():
     ap.add_argument("--workers-files", type=int, default=4)
     ap.add_argument("--log", default="terabox_dl.log")
     args = ap.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+    fmt = "%(asctime)s %(levelname)s %(message)s"
+    if args.etiqueta:
+        fmt = f"[{args.etiqueta}] " + fmt
+    logging.basicConfig(level=logging.INFO, format=fmt,
                         handlers=[logging.FileHandler(args.log, encoding="utf-8"),
                                   logging.StreamHandler(sys.stdout)])
     signal.signal(signal.SIGINT, lambda *_: (LOG.info("Ctrl+C: cerrando con gracia..."), STOP.set()))
     cookie = args.cookie or os.environ.get("TERABOX_COOKIE")
+    if not cookie and args.cookie_file:
+        try:
+            cookie = Path(args.cookie_file).read_text(encoding="utf-8").strip()
+            LOG.info("cookie leida de %s", args.cookie_file)
+        except OSError as e:
+            ap.error(f"no pude leer --cookie-file {args.cookie_file}: {e}")
     if not cookie:
         cand = Path(__file__).resolve().parent / "cookie.txt"
         if cand.exists():
             cookie = cand.read_text(encoding="utf-8").strip()
             LOG.info("cookie leida de %s", cand)
     if not cookie:
-        ap.error("Falta la cookie: usa --cookie, TERABOX_COOKIE o un cookie.txt "
-                 "junto al script")
+        ap.error("Falta la cookie: usa --cookie, --cookie-file, TERABOX_COOKIE "
+                 "o un cookie.txt junto al script")
     sess = build_session(cookie, args.proxy)
     client = ShareClient(sess, MIRRORS)
     surl = shorturl_from(args.url)
     LOG.info("Listando %s ...", surl)
     files, shareid, uk = client.list_all(surl)
     if args.only: files = [f for f in files if re.search(args.only, f["rel"])]
+    if args.only_file:
+        try:
+            pats = [l.strip() for l in
+                    Path(args.only_file).read_text(encoding="utf-8").splitlines()
+                    if l.strip() and not l.strip().startswith("#")]
+        except OSError as e:
+            ap.error(f"no pude leer --only-file {args.only_file}: {e}")
+        if pats:
+            rx = re.compile("|".join(f"(?:{p})" for p in pats))
+            antes = len(files)
+            files = [f for f in files if rx.search(f["rel"])]
+            LOG.info("--only-file %s: %d -> %d archivos", args.only_file, antes, len(files))
     if args.fsids:
         want = {x.strip() for x in args.fsids.split(",")}
         files = [f for f in files if str(f["fs_id"]) in want]
