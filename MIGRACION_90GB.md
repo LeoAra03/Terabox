@@ -262,6 +262,45 @@ Sirve mientras el dlink viva (~10 minutos). Si el archivo tarda más que eso, `a
 va a fallar y vas a tener que pedir dlink nuevo: por eso el método principal es el
 script de §3.
 
+### `supervisor.py` — la parte de tu spec que sí se puede hacer bien
+
+```bat
+SUPERVISOR.bat
+REM o a mano:
+python supervisor.py --url "<link>" -o C:\TB --techo-json informe_techo.json --esperar-cookie 900
+```
+
+Qué hace exactamente:
+
+- **Arranca con la config que midió §2** (`--techo-json` lee `informe_techo.json`) y
+  relanza **siempre con la misma**, así el número de conexiones activas se mantiene
+  en el punto óptimo medido en vez de bailar.
+- **Detecta `need verify_v2` / `400310` / `400210`** en la salida del descargador y,
+  en orden: (1) prueba refrescar la cookie de tu cuenta; (2) si no alcanza, te pide
+  el re-login y **espera** hasta 15 min (revisa cada 30 s); (3) si no aparece sesión
+  nueva, **para y lo deja escrito** en `supervisor.log`, en vez de quemar la noche
+  reintentando.
+- **Reanuda sin perder nada**: el descargador ya guarda progreso por segmentos de
+  64 MB en `.part.json` y pide con `Range`, así que el relanzamiento continúa donde
+  quedó, no de cero.
+- **Frena en seco ante `errno -6` / `ip_blacklist`**: no reintenta. Eso no se
+  reintenta, se espera.
+- **No da por bueno un cierre dudoso**: si el proceso sale con código 0 pero sin
+  `RESUMEN` de *esa* corrida, lo marca `DUDOSO` y te manda a verificar. (Esto era un
+  bug real que encontré probándolo: leía un `RESUMEN` viejo del log y cantaba
+  "listo" aunque la corrida hubiera fallado.)
+
+Validado con un descargador falso que emula los fallos reales, 6 escenarios:
+
+| Escenario probado | Resultado |
+|---|---|
+| `verify_v2` las 2 primeras corridas, el refresco funciona | refresca, relanza, `LISTO` 5/5 OK en 3 intentos (exit 0) |
+| `errno -6` / `ip_blacklist` | `STOP` inmediato, sin reintentar (exit 2) |
+| La cookie nunca se arregla | 3 intentos, para y explica (exit 3) |
+| `RESUMEN` viejo en el log + corrida nueva falla | **no** dice listo; frena por ban (exit 2) |
+| Exit 0 pero sin `RESUMEN` de esta corrida | `DUDOSO`, exit 1 |
+| `RESUMEN 4/5` | `PENDIENTE`, exit 1, manda a `VERIFICAR.bat` |
+
 ### Tus requisitos de orquestación: dónde está cada uno
 
 | Lo que pediste | Dónde está | Estado |
@@ -275,6 +314,9 @@ script de §3.
 | Reporte final OK/FAIL | `RESUMEN: n/N OK ... Fallos: [...]` en el log, e `informe_*.json` de `verificar_integridad.py` | ya en tu repo + nuevo |
 | MD5 si está disponible | `inventario_md5.py` (lo trae del API) + `verificar_integridad.py` (lo comprueba) | nuevo |
 | Medir el techo y elegir configuración con datos | `medir_techo.py` | nuevo |
+| Reintento automático cuando `verify_v2` corta la sesión | `supervisor.py` (una sola cuenta) | nuevo |
+| Mantener el nº de conexiones activas en el punto óptimo medido | `supervisor.py --techo-json` (relanza siempre con la misma config) | nuevo |
+| Log central con estado por intento | `supervisor.log` + `terabox_dl.log` | ya en tu repo + nuevo |
 
 O sea: de tu especificación, lo que faltaba era **medición y verificación** — eso es
 lo que se agregó en esta tanda. La orquestación multi-cuenta es lo único que no está,
@@ -408,7 +450,8 @@ el mismo valor con distinta concurrencia, ese es el cubo: no insistas con hilos.
 ### e) Cómo cerrar la migración
 
 1. `PREFLIGHT.bat` → disco OK, línea medida.
-2. Medición (§2) y descarga (§3) hasta `Fallos: []`.
+2. `SUPERVISOR.bat` (medición §2 + descarga §3, con reintento automático de sesión)
+   hasta `Fallos: []`.
 3. `VERIFICAR.bat` con `--cuarentena` → tiene que dar `FALTANTES: 0`, `TAMANO MAL: 0`,
    `MD5 MAL: 0`.
 4. Si quedó algo: relanzar con `--fsids $(cat rehacer_fsids.txt)` y repetir el paso 3.
