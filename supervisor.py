@@ -1,30 +1,29 @@
 #!/usr/bin/env python3
 # supervisor.py — vigila la descarga, arregla la sesion cuando TeraBox pide
-# re-verificacion, y relanza conservando lo bajado. UNA SOLA CUENTA.
+# re-verificacion, y relanza conservando lo bajado. UNA CUENTA POR INSTANCIA.
+#
+# Para N cuentas: levantá N instancias con --cookie-file distinto, --log-descarga
+# distinto, --log distinto y una particion distinta (--only-file / --only / --fsids).
+# Si una cuenta recibe verify_v2, cae solo esa instancia; las otras siguen.
+# Para automatizarlo: orquestar.py
 #
 # Que hace, en concreto:
 #   * Lee la configuracion optima medida por medir_techo.py (--techo-json) y
-#     arranca el descargador con ella. En cada relanzamiento usa LA MISMA config,
-#     asi el numero de conexiones activas se mantiene en el punto medido.
+#     arranca el descargador con ella. En cada relanzamiento usa LA MISMA config.
 #   * Vigila el log del descargador en vivo. Si aparece `need verify_v2`,
 #     400310 o 400210 (sesion vencida / re-verificacion pedida):
-#       - corre el refresco de cookie de TU cuenta (renovar_cookie.py --check)
+#       - corre el refresco de cookie DE SU CUENTA (renovar_cookie.py --check)
 #       - si el refresco no arregla nada, ESPERA a que pegues el ndus nuevo
-#         (sirve para dejarlo de noche: si no lo arreglas, para y reporta en vez
-#          de quemar la noche reintentando)
-#       - relanza. Lo bajado NO se pierde: el descargador reanuda desde los
-#         segmentos de 64 MB guardados en los .part.json (Range HTTP).
+#       - relanza. Lo bajado NO se pierde (.part.json).
 #   * Si aparece errno -6 / ip_blacklist: PARA TODO. Eso no se reintenta.
 #   * Lleva un log central: [FECHA] [INTENTO n] [ESTADO] mensaje.
-#   * Al final: cuanto se bajo, en cuantos intentos, y donde quedo el resumen.
 #
-# Uso tipico:
-#   python supervisor.py --url "https://www.1024tera.com/spanish/sharing/link?surl=..." \
-#                        -o C:\TB --techo-json informe_techo.json
-#
-#   python supervisor.py --url "<link>" -o C:\TB --workers-files 8 -c 8
-#   python supervisor.py --url "<link>" -o C:\TB --techo-json informe_techo.json \
-#                        --esperar-cookie 1800 --max-reintentos 6
+# Uso tipico (una cuenta):
+#   python supervisor.py --url "<link>" -o C:\TB --techo-json informe_techo.json
+# Uso multi-cuenta (una instancia por cuenta):
+#   python supervisor.py --url "<link>" -o C:\TB --cookie-file cookies\acc2.txt ^
+#          --only-file particiones\acc2.txt --log-descarga logs\acc2.log ^
+#          --log logs\supervisor_acc2.log --etiqueta acc2
 #
 # Codigos de salida:
 #   0 = termino sin fallos    1 = termino con archivos pendientes
@@ -55,19 +54,23 @@ def consola_utf8():
 
 
 class Log:
-    def __init__(self, ruta):
+    def __init__(self, ruta, etiqueta=None):
         self.ruta = ruta
+        self.etiqueta = etiqueta
         self.lock = threading.Lock()
 
     def __call__(self, estado, msg, intento=None):
         t = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cab = f"[{t}]"
+        if self.etiqueta:
+            cab += f" [{self.etiqueta}]"
         if intento is not None:
             cab += f" [INTENTO {intento}]"
         linea = f"{cab} [{estado}] {msg}"
         with self.lock:
             print(linea, flush=True)
             try:
+                os.makedirs(os.path.dirname(self.ruta) or ".", exist_ok=True)
                 with open(self.ruta, "a", encoding="utf-8") as f:
                     f.write(linea + "\n")
             except OSError:
@@ -89,14 +92,26 @@ def construir_comando(args):
                   f"workers-files {w} x {c} conexiones = {w*c} conexiones activas")
         except (OSError, KeyError, ValueError, json.JSONDecodeError) as e:
             print(f"  [!] no pude leer {args.techo_json} ({e}); uso {w}x{c}")
-    return [sys.executable, "-u", os.path.join(AQUI, "terabox_v2_fixed.py"),
-            args.url, "-o", args.destino,
-            "--workers-files", str(w), "-c", str(c),
-            "--log", args.log_descarga]
+    cmd = [sys.executable, "-u", os.path.join(AQUI, "terabox_v2_fixed.py"),
+           args.url, "-o", args.destino,
+           "--workers-files", str(w), "-c", str(c),
+           "--log", args.log_descarga]
+    # --- NUEVO: la identidad y la particion de ESTA instancia -------------
+    if args.cookie_file:
+        cmd += ["--cookie-file", args.cookie_file]
+    if args.only:
+        cmd += ["--only", args.only]
+    if args.only_file:
+        cmd += ["--only-file", args.only_file]
+    if args.fsids:
+        cmd += ["--fsids", args.fsids]
+    if args.etiqueta:
+        cmd += ["--etiqueta", args.etiqueta]
+    return cmd
 
 
 def lanzar(cmd, log, intento, estado):
-    """Lanza el descargador y devuelve (codigo, resumen, hubo_sesion, hubo_ban, ultimo_progreso)."""
+    """Lanza el descargador y devuelve (codigo, resumen, estado_run)."""
     log(estado, f"lanzando: {' '.join(cmd)}" if isinstance(cmd, list) else f"lanzando: {cmd}",
         intento)
     # el log del descargador se APPENDEA entre corridas: si no marcamos el offset,
@@ -191,7 +206,8 @@ def esperar_cookie_manual(args, log, intento):
     print("   En otra ventana:")
     print("     1) cerrá sesión en 1024tera.com y volvé a entrar")
     print("     2) F12 - Application - Cookies - 1024tera.com - copiá 'ndus'")
-    print("     3) doble clic en RENOVAR_COOKIE.bat y pegala")
+    print("     3) guardala en SU archivo de cookie:")
+    print(f"        python renovar_cookie.py --cookie-file \"{args.cookie_file or 'cookie.txt'}\"")
     print("   Lo bajado NO se pierde: al relanzar, sigue desde el segmento donde quedó.")
     print("  " + "=" * 66)
     print()
@@ -208,13 +224,24 @@ def main():
     ap.add_argument("--techo-json", help="informe de medir_techo.py; usa su config optima")
     ap.add_argument("--workers-files", type=int, default=4)
     ap.add_argument("--conexiones", "-c", type=int, default=24)
-    ap.add_argument("--log-descarga", default="terabox_dl.log")
-    ap.add_argument("--log", dest="log_central", default=LOG_CENTRAL)
+    # --- NUEVO: identidad y particion por instancia -----------------------
+    ap.add_argument("--cookie-file", default=None,
+                    help="archivo con el ndus de ESTA instancia (una cuenta por instancia)")
+    ap.add_argument("--only", default=None, help="patron regex de archivos a bajar")
+    ap.add_argument("--only-file", default=None,
+                    help="archivo con un patron por linea (se combinan con OR)")
+    ap.add_argument("--fsids", default=None, help="fs_id separados por coma")
+    ap.add_argument("--etiqueta", default=None, help="prefijo de instancia (acc1, acc2, ...)")
+    ap.add_argument("--log-descarga", default="terabox_dl.log",
+                    help="log del descargador; USÁ UNO DISTINTO POR INSTANCIA")
+    ap.add_argument("--log", dest="log_central", default=LOG_CENTRAL,
+                    help="log central del supervisor; USÁ UNO DISTINTO POR INSTANCIA")
     ap.add_argument("--max-reintentos", type=int, default=5)
     ap.add_argument("--esperar-cookie", type=int, default=900,
                     help="segundos a esperar un ndus nuevo (0 = no esperar)")
-    ap.add_argument("--refrescar", default=f'"{sys.executable}" renovar_cookie.py --check',
-                    help="comando de refresco de sesion (misma cuenta siempre)")
+    ap.add_argument("--refrescar", default=None,
+                    help="comando de refresco de sesion (por defecto: la cookie de "
+                         "esta instancia)")
     ap.add_argument("--sin-refresco", action="store_true")
     ap.add_argument("--comando", help="comando completo del descargador (para pruebas)")
     ap.add_argument("--max-horas", type=float, default=0, help="0 = sin tope")
@@ -223,10 +250,18 @@ def main():
     args_global = args
     consola_utf8()
 
-    log = Log(args.log_central)
+    # --- NUEVO: el refresco apunta a LA CUENTA de esta instancia ----------
+    if args.refrescar is None:
+        args.refrescar = f'"{sys.executable}" renovar_cookie.py --check'
+        if args.cookie_file:
+            args.refrescar += f' --cookie-file "{args.cookie_file}"'
+
+    log = Log(args.log_central, args.etiqueta)
     t0 = time.time()
     print("=" * 70)
-    print("  SUPERVISOR DE DESCARGA — una sola cuenta")
+    print(f"  SUPERVISOR DE DESCARGA — instancia {args.etiqueta or 'unica'}")
+    if args.cookie_file:
+        print(f"  cookie: {args.cookie_file}")
     print("=" * 70)
     log("INICIO", f"objetivo: {args.url or args.comando}")
 
